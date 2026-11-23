@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QR Check-in</title>
+
+  <style>
+    body {
+      max-width: 420px;
+      margin: 48px auto;
+      padding: 0 24px;
+      background: #08251a;
+      color: #e5f5eb;
+      font-family: system-ui, sans-serif;
+    }
+
+    h1 {
+      margin: 0 0 24px;
+      color: #a8ff60;
+      font-size: clamp(2rem, 7vw, 3rem);
+      line-height: 1.1;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    textarea {
+      box-sizing: border-box;
+      display: block;
+      width: 100%;
+      margin-bottom: 12px;
+      padding: 12px;
+      border: 1px solid #739585;
+      border-radius: 10px;
+      background: #10382a;
+      color: #e5f5eb;
+      font: inherit;
+      resize: vertical;
+    }
+
+    button {
+      padding: 14px 24px;
+      border: 0;
+      border-radius: 12px;
+      background: #a8ff60;
+      color: #08251a;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover:not(:disabled) {
+      background: #c4ff91;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    :focus-visible {
+      outline: 2px solid #e5f5eb;
+      outline-offset: 4px;
+    }
+
+    #count {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    #status {
+      color: #b6d4c3;
+    }
+
+    #reader {
+      margin-top: 16px;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    details {
+      margin-top: 20px;
+    }
+
+    summary {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>QR Check-in</h1>
+
+  <form id="order-form">
+    <label for="orders">Paste order numbers from Excel</label>
+    <textarea id="orders" rows="5" spellcheck="false"></textarea>
+    <button type="submit">Load orders</button>
+  </form>
+
+  <p id="count">0 / 0 scanned</p>
+  <button id="start" type="button" disabled>Start camera</button>
+  <p id="status" role="status">Load your order list to get started.</p>
+  <div id="reader"></div>
+
+  <details id="remaining" hidden>
+    <summary id="remaining-count">Orders remaining</summary>
+    <ul id="remaining-list"></ul>
+  </details>
+
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    const expected = new Set();
+    const scanned = new Set();
+
+    const form = document.querySelector("#order-form");
+    const orders = document.querySelector("#orders");
+    const count = document.querySelector("#count");
+    const status = document.querySelector("#status");
+    const start = document.querySelector("#start");
+    const remaining = document.querySelector("#remaining");
+    const remainingCount = document.querySelector("#remaining-count");
+    const remainingList = document.querySelector("#remaining-list");
+
+    let lastRead = "";
+    let lastReadAt = 0;
+
+    function updateChecklist() {
+      const pending = [...expected].filter(code => !scanned.has(code));
+
+      count.textContent = `${scanned.size} / ${expected.size} scanned`;
+      remainingCount.textContent = `Orders remaining (${pending.length})`;
+      remainingList.replaceChildren();
+
+      for (const code of pending) {
+        const item = document.createElement("li");
+        item.textContent = code;
+        remainingList.append(item);
+      }
+    }
+
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+
+      const values = orders.value
+        .split(/\r?\n/)
+        .map(value => value.trim())
+        .filter(Boolean);
+
+      if (!values.length || values.some(value => !/^b:bfy\d+-\d+$/.test(value))) {
+        status.textContent = "Paste one full order number per line.";
+        return;
+      }
+
+      values.forEach(value => expected.add(value));
+      updateChecklist();
+
+      form.hidden = true;
+      remaining.hidden = false;
+      start.disabled = false;
+      status.textContent = "Orders loaded. Start the camera when ready.";
+      start.focus();
+    });
+
+    function checkCode(decodedText) {
+      const code = decodedText.trim();
+      const now = Date.now();
+
+      // Ignore repeat reads while the same QR is still in view.
+      const stillInView = code === lastRead && now - lastReadAt < 800;
+      lastRead = code;
+      lastReadAt = now;
+      if (stillInView) return;
+
+      if (!expected.has(code)) {
+        status.textContent = "Unknown code";
+        return;
+      }
+
+      if (scanned.has(code)) {
+        status.textContent = `Already scanned · ${code}`;
+        return;
+      }
+
+      scanned.add(code);
+      updateChecklist();
+      status.textContent = `Checked off ✓ ${code}`;
+    }
+
+    start.addEventListener("click", async () => {
+      start.disabled = true;
+      status.textContent = "Starting camera…";
+
+      try {
+        const scanner = new Html5Qrcode("reader");
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10 },
+          checkCode
+        );
+        start.hidden = true;
+
+        if (status.textContent === "Starting camera…") {
+          status.textContent = "Point the camera at a QR code.";
+        }
+      } catch (error) {
+        status.textContent = `Could not start the camera. ${error}`;
+        start.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
