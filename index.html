@@ -66,6 +66,12 @@
       outline-offset: 4px;
     }
 
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
     #count {
       font-size: 1.25rem;
       font-weight: 700;
@@ -73,6 +79,31 @@
 
     #status {
       color: #b6d4c3;
+    }
+
+    #status[data-result] {
+      padding: 14px 16px;
+      border-radius: 12px;
+      font-size: 1.15rem;
+      font-weight: 800;
+      line-height: 1.4;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+
+    #status[data-result="success"] {
+      background: #a8ff60;
+      color: #08251a;
+    }
+
+    #status[data-result="duplicate"] {
+      background: #ffdc78;
+      color: #382600;
+    }
+
+    #status[data-result="error"] {
+      background: #ffc4c4;
+      color: #490c0c;
     }
 
     #reader {
@@ -90,6 +121,7 @@
     }
   </style>
 </head>
+
 <body>
   <h1>QR Check-in</h1>
 
@@ -100,7 +132,12 @@
   </form>
 
   <p id="count">0 / 0 scanned</p>
-  <button id="start" type="button" disabled>Start camera</button>
+
+  <div class="actions">
+    <button id="copy-link" type="button" hidden>Copy session link</button>
+    <button id="start" type="button" disabled>Start camera</button>
+  </div>
+
   <p id="status" role="status">Load your order list to get started.</p>
   <div id="reader"></div>
 
@@ -110,192 +147,207 @@
   </details>
 
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-<script>
-  const projectUrl = "https://lehxlzxgswmhpjdkuzgn.supabase.co";
-  const publishableKey = "sb_publishable_cmxbvYaqnKA_TW982KP1bA_X8p8MOPy";
+  <script>
+    const projectUrl = "https://lehxlzxgswmhpjdkuzgn.supabase.co";
+    const publishableKey = "sb_publishable_cmxbvYaqnKA_TW982KP1bA_X8p8MOPy";
 
-  const form = document.querySelector("#order-form");
-  const orders = document.querySelector("#orders");
-  const count = document.querySelector("#count");
-  const status = document.querySelector("#status");
-  const start = document.querySelector("#start");
-  const remaining = document.querySelector("#remaining");
-  const remainingCount = document.querySelector("#remaining-count");
-  const remainingList = document.querySelector("#remaining-list");
+    const form = document.querySelector("#order-form");
+    const orders = document.querySelector("#orders");
+    const count = document.querySelector("#count");
+    const status = document.querySelector("#status");
+    const copyLink = document.querySelector("#copy-link");
+    const start = document.querySelector("#start");
+    const remaining = document.querySelector("#remaining");
+    const remainingCount = document.querySelector("#remaining-count");
+    const remainingList = document.querySelector("#remaining-list");
 
-  const pageUrl = new URL(location.href);
-  const fragment = new URLSearchParams(pageUrl.hash.slice(1));
-  let session = fragment.get("session");
-  let syncing = false;
-  let savingScan = false;
-  let lastRead = "";
-  let lastReadAt = 0;
-  const scanned = new Set();
+    const pageUrl = new URL(location.href);
+    const fragment = new URLSearchParams(pageUrl.hash.slice(1));
+    let session = fragment.get("session");
+    let syncing = false;
+    let savingScan = false;
+    let lastRead = "";
+    let lastReadAt = 0;
+    const scanned = new Set();
 
-  async function rpc(name, args) {
-    const response = await fetch(`${projectUrl}/rest/v1/rpc/${name}`, {
-      method: "POST",
-      headers: {
-        apikey: publishableKey,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(args)
-    });
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || "Database request failed.");
-    return data;
-  }
-
-  async function refreshChecklist() {
-    if (syncing) return;
-    syncing = true;
-
-    try {
-      const rows = await rpc("qr_get_checklist", { p_session: session });
-      if (!rows.length) throw new Error("Checklist not found.");
-
-      for (const row of rows) {
-        if (row.scanned_at) scanned.add(row.order_code);
+    function showStatus(message, result) {
+      if (result) {
+        status.dataset.result = result;
+      } else {
+        delete status.dataset.result;
       }
 
-      const pending = rows.filter(row => !scanned.has(row.order_code));
-      count.textContent = `${rows.length - pending.length} / ${rows.length} scanned`;
-      remainingCount.textContent = `Orders remaining (${pending.length})`;
-      remainingList.replaceChildren();
+      status.textContent = message;
+    }
 
-      for (const row of pending) {
-        const item = document.createElement("li");
-        item.textContent = row.order_code;
-        remainingList.append(item);
+    async function rpc(name, args) {
+      const response = await fetch(`${projectUrl}/rest/v1/rpc/${name}`, {
+        method: "POST",
+        headers: {
+          apikey: publishableKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(args)
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || "Database request failed.");
       }
+      return data;
+    }
 
-      delete count.dataset.syncError;
-    } catch (error) {
-      if (!remaining.hidden) {
+    async function refreshChecklist() {
+      if (syncing) return;
+      syncing = true;
+
+      try {
+        const rows = await rpc("qr_get_checklist", { p_session: session });
+        if (!rows.length) throw new Error("Checklist not found.");
+
+        for (const row of rows) {
+          if (row.scanned_at) scanned.add(row.order_code);
+        }
+
+        const pending = rows.filter(row => !scanned.has(row.order_code));
+        count.textContent = `${rows.length - pending.length} / ${rows.length} scanned`;
+        remainingCount.textContent = `Orders remaining (${pending.length})`;
+        remainingList.replaceChildren();
+
+        for (const row of pending) {
+          const item = document.createElement("li");
+          item.textContent = row.order_code;
+          remainingList.append(item);
+        }
+
+        delete count.dataset.syncError;
+      } catch (error) {
+        if (remaining.hidden) throw error;
+
         if (count.dataset.syncError !== "true") {
           count.textContent += " · Reconnecting…";
           count.dataset.syncError = "true";
         }
+      } finally {
+        syncing = false;
+      }
+    }
+
+    copyLink.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(location.href);
+        copyLink.textContent = "Link copied ✓";
+      } catch {
+        showStatus("Copy the session link from your address bar.");
+      }
+    });
+
+    async function openChecklist() {
+      await refreshChecklist();
+      form.hidden = true;
+      remaining.hidden = false;
+      copyLink.hidden = false;
+      start.disabled = false;
+      showStatus("Checklist ready. Start the camera when ready.");
+      setInterval(refreshChecklist, 2500);
+    }
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+
+      const values = [...new Set(
+        orders.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+      )];
+
+      if (!values.length || values.some(value => !/^b:bfy\d+-\d+$/.test(value))) {
+        showStatus("Paste one full order number per line.", "error");
         return;
       }
-      throw error;
-    } finally {
-      syncing = false;
-    }
-  }
 
-  const copyLink = document.createElement("button");
-  copyLink.type = "button";
-  copyLink.textContent = "Copy session link";
-  copyLink.hidden = true;
-  start.before(copyLink);
+      const loadButton = form.querySelector("button");
+      loadButton.disabled = true;
+      showStatus("Creating shared checklist…");
 
-  copyLink.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(location.href);
-      copyLink.textContent = "Link copied ✓";
-    } catch {
-      status.textContent = "Copy the session link from your address bar.";
-    }
-  });
-
-  async function openChecklist() {
-    await refreshChecklist();
-    form.hidden = true;
-    remaining.hidden = false;
-    copyLink.hidden = false;
-    start.disabled = false;
-    status.textContent = "Checklist ready. Start the camera when ready.";
-    setInterval(refreshChecklist, 2500);
-  }
-
-  form.addEventListener("submit", async event => {
-    event.preventDefault();
-
-    const values = [...new Set(
-      orders.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    )];
-
-    if (!values.length || values.some(value => !/^b:bfy\d+-\d+$/.test(value))) {
-      status.textContent = "Paste one full order number per line.";
-      return;
-    }
-
-    const loadButton = form.querySelector("button");
-    loadButton.disabled = true;
-    status.textContent = "Creating shared checklist…";
-
-    try {
-      session = await rpc("qr_create_session", { p_orders: values });
-      pageUrl.hash = new URLSearchParams({ session }).toString();
-      history.replaceState(null, "", pageUrl);
-      await openChecklist();
-    } catch (error) {
-      status.textContent = session
-        ? `Reload this link to reopen the checklist. ${error.message}`
-        : `Could not create the checklist. ${error.message}`;
-      loadButton.disabled = Boolean(session);
-    }
-  });
-
-  async function checkCode(decodedText) {
-    const code = decodedText.trim();
-    const now = Date.now();
-    const stillInView = code === lastRead && now - lastReadAt < 800;
-    lastRead = code;
-    lastReadAt = now;
-    if (stillInView || savingScan) return;
-
-    savingScan = true;
-    status.textContent = "Checking code…";
-
-    try {
-      const result = await rpc("qr_scan_order", {
-        p_session: session,
-        p_code: code
-      });
-
-      if (result === "checked_off" || result === "already_scanned") {
-        scanned.add(code);
-        status.textContent = result === "checked_off"
-          ? `Checked off ✓ ${code}`
-          : `Already scanned · ${code}`;
-        await refreshChecklist();
-      } else {
-        status.textContent = "Unknown code";
+      try {
+        session = await rpc("qr_create_session", { p_orders: values });
+        pageUrl.hash = new URLSearchParams({ session }).toString();
+        history.replaceState(null, "", pageUrl);
+        await openChecklist();
+      } catch (error) {
+        showStatus(
+          session
+            ? `Reload this link to reopen the checklist. ${error.message}`
+            : `Could not create the checklist. ${error.message}`,
+          "error"
+        );
+        loadButton.disabled = Boolean(session);
       }
-    } catch {
-      status.textContent = "Could not confirm the scan. Move the QR away and try again.";
-    } finally {
-      savingScan = false;
-    }
-  }
-
-  start.addEventListener("click", async () => {
-    start.disabled = true;
-    status.textContent = "Starting camera…";
-
-    try {
-      const scanner = new Html5Qrcode("reader");
-      await scanner.start({ facingMode: "environment" }, { fps: 10 }, checkCode);
-      start.hidden = true;
-      if (status.textContent === "Starting camera…") {
-        status.textContent = "Point the camera at a QR code.";
-      }
-    } catch (error) {
-      status.textContent = `Could not start the camera. ${error}`;
-      start.disabled = false;
-    }
-  });
-
-  if (session) {
-    form.hidden = true;
-    status.textContent = "Opening shared checklist…";
-    openChecklist().catch(error => {
-      status.textContent = `Could not open the checklist. ${error.message}`;
     });
-  }
-</script>
+
+    async function checkCode(decodedText) {
+      const code = decodedText.trim();
+      const now = Date.now();
+
+      // Suppress repeat reads while the same QR is still in view.
+      const stillInView = code === lastRead && now - lastReadAt < 800;
+      lastRead = code;
+      lastReadAt = now;
+      if (stillInView || savingScan) return;
+
+      savingScan = true;
+      showStatus("Checking code…");
+
+      try {
+        const result = await rpc("qr_scan_order", {
+          p_session: session,
+          p_code: code
+        });
+
+        if (result === "checked_off") {
+          scanned.add(code);
+          showStatus(`✓ Check-in successful\n${code}`, "success");
+          await refreshChecklist();
+        } else if (result === "already_scanned") {
+          scanned.add(code);
+          showStatus(`⚠ Already checked in\n${code}`, "duplicate");
+          await refreshChecklist();
+        } else if (result === "unknown") {
+          showStatus("✕ QR code isn’t on this checklist", "error");
+        } else {
+          throw new Error("Unexpected scan response.");
+        }
+      } catch {
+        showStatus("Couldn’t confirm the scan. Move the QR away and try again.", "error");
+      } finally {
+        savingScan = false;
+      }
+    }
+
+    start.addEventListener("click", async () => {
+      start.disabled = true;
+      showStatus("Starting camera…");
+
+      try {
+        const scanner = new Html5Qrcode("reader");
+        await scanner.start({ facingMode: "environment" }, { fps: 10 }, checkCode);
+        start.hidden = true;
+
+        if (status.textContent === "Starting camera…") {
+          showStatus("Point the camera at a QR code.");
+        }
+      } catch (error) {
+        showStatus(`Could not start the camera. ${error}`, "error");
+        start.disabled = false;
+      }
+    });
+
+    if (session) {
+      form.hidden = true;
+      showStatus("Opening shared checklist…");
+      openChecklist().catch(error => {
+        showStatus(`Could not open the checklist. ${error.message}`, "error");
+      });
+    }
+  </script>
 </body>
 </html>
